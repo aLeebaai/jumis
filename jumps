@@ -1,0 +1,294 @@
+type TTab is table of ref [KAS_ART_OPER];
+type TTabTime is table of date;  -- Aitbayev 16.01.2019 #CQweb00246976
+dOp			date := ::[system].[variables].op_date;
+Params		varchar2(2000);
+cTypes		varchar2(2000);
+cTypes2		varchar2(2000);
+nDays		number;
+nMin		number;
+--<< Aitbayev 10.01.2019 #CQweb00246976
+nMinPrepare	number;
+nMinReproc	number;
+-->> Aitbayev 10.01.2019 #CQweb00246976
+
+procedure L( s in varchar2 ) is
+cFile_Old	varchar2(500);
+begin
+	::[RUNTIME].[KAS_LM].SET_DEBUG_METHODS;
+	if INSTR(::[RUNTIME].[KAS_LM].CG_DEBUG_METHODS,'[KAS_ART_OPER]::[TSK_PROC_ERROR]') > 0 then
+		cFile_Old := we.cWe;
+		we.dfc;	
+		we.cWe := 'TSK_PROC_ERROR_'||to_char(dOp,'ddmmyyyy')||'.txt';
+		we.df(s);
+		we.dfc;
+		we.cWe := cFile_Old;
+	end if;
+end;
+
+procedure InitParams is
+begin
+	begin
+		Params := ::[FP_TUNE].LIB.get_str_value('TSK_PROC_ERROR');
+	exception when others then
+		Params := '[NDAYS#1][NMIN#5][ERR#][MAIL#]';
+	end;
+	begin
+		nDays := to_number( we.rsCode_R(Params, 'NDAYS') );
+	exception when others then
+		nDays := 1;
+	end;
+	begin
+		nMin := to_number( we.rsCode_R(Params, 'NMIN') );
+	exception when others then
+		nMin := 5;
+	end;
+	--<< Aitbayev 10.01.2019 #CQweb00246976
+	begin
+		nMinPrepare := to_number( we.rsCode_R(Params, 'NMIN_PREP') );
+	exception when others then
+		nMinPrepare := 5;
+	end;
+	begin
+		nMinReproc := to_number( we.rsCode_R(Params, 'NMIN_REPROC') );
+	exception when others then
+		nMinReproc := 15;
+	end;
+	-->> Aitbayev 10.01.2019 #CQweb00246976
+	begin
+		cTypes := ::[FP_TUNE].LIB.get_str_value('TSK_PROC_ERROR_TYPES');
+	exception when others then
+		cTypes := Null;
+	end;
+	
+	begin
+		cTypes2 := ::[FP_TUNE].LIB.get_str_value('TSK_PROC_ERROR_TYPES2');
+	exception when others then
+		cTypes2 := Null;
+	end;
+		
+	L('Params='||Params||' nDays='||to_char(nDays)||' nMin='||to_char(nMin)||' dOp='||to_char(dOp,'dd/mm/yyyy'));
+end;
+
+procedure Send_Email( cEmail in varchar2, In_Body in varchar2, cSubj in varchar2 := 'Ошибки по платежам/переводам из АРТ') is
+begin
+	::[RUNTIME].[KAS_LIB].send_email
+		(
+		cIn_To			== cEmail,
+		cIn_Subject		== cSubj,
+		cIn_Massage		== In_Body
+		);
+
+end;
+--<< alimbayev 11.10.2018 #CQweb00244283
+procedure append_note( sOper in out [KAS_ART_OPER] )is
+rPr_Db	ref [PRODUCT];
+rPr_Cr	ref [PRODUCT];
+rPc		ref [KAS_PC_DOG];
+rDepn	ref [DEPN];
+ID_Prospect	number;
+ID_Client	number;
+begin
+	if instr( sOper.[NOTE], 'Счет отправитель и счет получатель принадлежат разным клиентам' ) > 0 then
+		rPr_Db%id := sOper.[REF_PRD_DT];
+		rPr_Cr%id := sOper.[REF_PRD_CT];
+		if rPr_Db is not Null and rPr_Cr is not Null then
+
+			if rPr_Db%Class = 'KAS_PC_DOG' then
+				rPc%id := rPr_Db%id;
+				if rPc.[IS_PURSE] then
+					ID_Prospect := rPc.[CLIENT_REF]%id;
+				else
+					ID_Client	:= rPc.[CLIENT_REF]%id;
+				end if;
+			elsif rPr_Db%Class = 'DEPOSIT_PRIV' then
+				rDepn%id := rPr_Db%id;
+				ID_Client	:= rDepn.[CLIENT]%id;
+			end if;
+
+			if rPr_Cr%Class = 'KAS_PC_DOG' then
+				rPc%id := rPr_Cr%id;
+				if rPc.[IS_PURSE] then
+					ID_Prospect := rPc.[CLIENT_REF]%id;
+				else
+					ID_Client	:= rPc.[CLIENT_REF]%id;
+				end if;
+			elsif rPr_Cr%Class = 'DEPOSIT_PRIV' then
+				rDepn%id := rPr_Cr%id;
+				ID_Client	:= rDepn.[CLIENT]%id;
+			end if;
+			
+			sOper.[NOTE] := sOper.[NOTE] || '<br>' || 'ID Клиента: '|| to_char( ID_Client ) || ',  ID Проспекта: ' || to_char( ID_Prospect );
+		end if;
+	end if;
+exception when others then
+	null;
+end;
+-->> alimbayev 11.10.2018 #CQweb00244283
+function GetStr( n in number, sOper in [KAS_ART_OPER] )return varchar2 is
+cRez	varchar2(32000);
+begin
+	append_note( sOper );			-- alimbayev 11.10.2018 #CQweb00244283
+	cRez := '<tr><td  align=center>' || to_char( n )
+	||		'</td><td align=center>' || to_char( sOper.[DATE_MSG_FULL], 'dd/mm/yyyy hh24:mi:ss' )
+	||		'</td><td align=center>' || to_char( sOper.[ID_ART] )
+	||		'</td><td align=center>' || to_char( sOper.[TYPE_OPER] )
+	||		'</td><td align=center>' || case sOper.[TYPE_OPER] when 70357 then to_char( sOper.[ID_SOURCE] )        else  nvl(sOper.[PRD_NO_DT], sOper.[ACCOUNT_DT]) end   -- BAIGOZ 12.12.2022 DP-3667
+	||		'</td><td align=center>' || case sOper.[TYPE_OPER] when 70357 then to_char( sOper.[ID_SOURCE_PARENT] ) else  nvl(sOper.[PRD_NO_CT], sOper.[ACCOUNT_CT]) end   -- BAIGOZ 12.12.2022 DP-3667
+	||		'</td><td align=right>'  || to_char( sOper.[SUMM])
+	||		'</td><td align=left>'   || substr(sOper.[NOTE],1,500)
+	||		'</td></tr>';	
+	return cRez;
+end;
+
+function Head( cCnt in number ) return varchar2 is
+cRez varchar2(32000);
+begin
+	cRez := 'Количество ошибок: '||to_char(cCnt)||'<br>';
+	cRez := cRez|| '<table border="1" style="font:12px verdana"><tr><td>N</td><td>Дата и время операции</td><td>ID ART</td><td>Тип</td><td>Счет/договор отправителя/ID Отм.опер</td><td>Счет/договор получателя/ID реверса</td><td>Сумма</td><td>Текст ошибки</td></tr>';	 -- BAIGOZ 12.12.2022 DP-3667	
+	return cRez;
+end;
+
+function GetTypeName( cCode in varchar2) return varchar2 is
+begin
+	return '<tr><td>'||cCode||'</td><td> '||we.rsCode_R(cTypes, cCode)||'</td></tr>';
+end;
+
+function GetTypeName2( cCode2 in varchar2) return varchar2 is
+begin
+	return '<tr><td>'||cCode2||'</td><td> '||we.rsCode_R(cTypes2, cCode2)||'</td></tr>';
+end;
+
+
+procedure Send( InTab in TTab, cErr in varchar2, cMail in varchar2, cSubj in varchar2 ) is				-- alimbayev 12.10.2018 #CQweb00244283
+cRez	varchar2(32000);
+bExist	boolean;
+cBottom	varchar2(32000) := '<br><table border="1" style="font:12px verdana">';
+tType	[CONSTANT].[NUMBER_TABLE_S];
+cType	varchar2;
+nCnt	number := 0;
+begin
+	bExist	:= False;
+	tType.Delete;
+	for i in 1 .. InTab.count where cErr is Null or instr( InTab(i).[NOTE], cErr ) > 0 loop
+	begin
+		bExist	:= True;
+		nCnt	:= nCnt + 1;
+		cRez	:= cRez || GetStr( nCnt, InTab(i) )||'';
+		cType	:= InTab(i).[TYPE_OPER];
+		if not tType.exists( cType ) then
+			cBottom := cBottom || GetTypeName ( cType );
+		    cBottom := cBottom || GetTypeName2( cType );
+			tType( cType ) := 1;
+		end if;
+		--<< alimbayev 12.10.2018 #CQweb00244283
+		if length(cRez) > 30000 then
+			cRez	:= Head( nCnt ) || cRez;
+			cRez	:= cRez || '</table>';
+			cRez	:= cRez || cBottom;
+			Send_Email( cMail, cRez, cSubj );
+			cRez 	:= '';
+			bExist	:= False;
+			nCnt	:= 0;
+		end if;
+		
+		
+	
+
+
+		--	if cType is null then
+	   	--       cBottom := cBottom || GetTypeName2( cType2 ) ;
+			--else  cBottom := cBottom || GetTypeName( cType ) ;
+		--	end if;			
+		
+
+		  --  cBottom := cBottom || GetTypeName( cType );    
+
+
+/*		if  GetTypeName2(cType)  is  null then
+	    cBottom := cBottom || GetTypeName( cType );
+		end if;
+		if  GetTypeName2(cType)  is not null then
+		    cBottom := cBottom || GetTypeName2( cType );
+		end if; 
+		*/
+				
+--		if  GetTypeName(cType)  is not null and GetTypeName2(cType) is null then
+--			cBottom := cBottom || GetTypeName( cType );
+--		end if;
+--		if  GetTypeName2(cType)  is not null and GetTypeName(cType) is null then
+--			cBottom := cBottom || GetTypeName2( cType );
+--		end if;
+		
+	--		if  GetTypeName(cType)  is  null then
+	--	    cBottom := cBottom || GetTypeName2( cType );
+	--		else 
+	--		cBottom := cBottom || GetTypeName( cType );
+	--		end if;
+	--		if  GetTypeName2(cType)  is not null then
+	--	    cBottom := cBottom || GetTypeName( cType );
+	--		else 
+	--		cBottom := cBottom || GetTypeName2( cType );
+	--		end if;
+			
+	
+		-->> alimbayev 12.10.2018 #CQweb00244283
+	exception when others then
+		null;
+	end;
+	end loop;
+	
+	cRez	:= Head( nCnt ) || cRez;
+	cRez := cRez || '</table>';
+	cRez := cRez || cBottom;
+	if bExist then
+		--<< alimbayev 12.10.2018 #CQweb00244283
+		Send_Email( cMail, cRez, cSubj );
+/*		return cRez;
+	else
+		return Null;*/
+		-->> alimbayev 12.10.2018 #CQweb00244283
+	end if;
+end;
+
+--<< Aitbayev 18.03.2019 #CQweb00248843
+procedure get_OD_time( OpDate in date default null, time_begin out date, time_end out date ) is
+jd    ref [JOURNAL_OP_DAYS];
+begin
+	if OpDate is null then
+		OpDate := dOp;
+	end if;
+	begin
+		locate jd in [JOURNAL_OP_DAYS] all where jd.[OP_DAY] = OpDate;
+		time_begin := jd.[DATE_BEGIN];
+		time_end := jd.[DATE_END];
+	exception
+		when NO_DATA_FOUND then NULL;
+	end;
+end;
+-->> Aitbayev 18.03.2019 #CQweb00248843
+--<<BAIGOZ 15.12.22 DP-3676
+function GetStrTelegram(sOper in [KAS_ART_OPER])return varchar2 is
+cRez2	varchar2(32000);
+begin
+	append_note( sOper );		
+	cRez2 := 'Дата: '  			    || to_char( sOper.[DATE_MSG_FULL], 'dd/mm/yyyy hh24:mi:ss' ) || '<br>'
+	||		 'ID ART: ' 			|| to_char( sOper.[ID_ART] )  || '<br>'
+    ||		 'Тип: '    			|| GetTypeName( sOper.[TYPE_OPER] )|| '<br>'
+	||		 'Сумма: '  			|| to_char( sOper.[SUMM])     || '<br>'
+	||		 'Текст ошибки: '       || substr(sOper.[NOTE],1,500) || '<br>';		
+	return cRez2;
+end;
+
+procedure SendTelegram ( InTab in TTab, cMail in varchar2, cSubj in varchar2 ) is				
+cRez	varchar2(32000);
+begin
+	for i in 1 .. InTab.count  > 0 loop
+	begin
+		cRez	:= cRez || GetStrTelegram( InTab(i) );
+	exception when others then
+		null;
+	end;
+	end loop;	
+		Send_Email( cMail, cRez, cSubj );	
+end;
+-->>BAIGOZ 15.12.22 DP-3676
